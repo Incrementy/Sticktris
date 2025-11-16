@@ -1,0 +1,625 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Sticktris</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root {
+      --bg: #000;
+      --hud: #fff;
+      --hud-dim: #bfbfbf;
+      --grid: #1a1a1a;
+    }
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: var(--bg);
+      color: var(--hud);
+      font: 16px/1.35 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      overflow: hidden;
+      user-select: none;
+    }
+    #game {
+      display: block;
+      margin: 0;
+      outline: none;
+      width: 100%;
+      height: 100%;
+      image-rendering: crisp-edges;
+      image-rendering: pixelated;
+    }
+    .hud {
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      color: var(--hud);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 14px;
+      line-height: 1.25;
+      pointer-events: none;
+      white-space: pre;
+      text-shadow: 0 1px 0 rgba(0,0,0,0.6);
+    }
+    .hud .labels { color: var(--hud-dim); }
+
+    .info-btn {
+      position: fixed;
+      top: 10px;
+      right: 12px;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      color: var(--hud);
+      border: 1px solid #2a2a2a;
+      background: rgba(0,0,0,0.6);
+      display: grid;
+      place-items: center;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      cursor: pointer;
+      transition: transform 0.12s ease;
+    }
+    .info-btn:hover { transform: scale(1.06); }
+    .info-btn:active { transform: scale(0.98); }
+
+    .overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.8);
+      color: var(--hud);
+      display: none;
+    }
+    .overlay.open { display: block; }
+    .overlay .panel {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      max-width: min(680px, 92vw);
+      padding: 18px 20px;
+      border: 1px solid #222;
+      background: rgba(0,0,0,0.9);
+      border-radius: 10px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 14px;
+    }
+    .overlay h2 { margin: 0 0 10px 0; font-size: 18px; }
+    .overlay p { margin: 8px 0; color: #e6e6e6; }
+    .overlay ul { margin: 6px 0 0 18px; padding: 0; }
+    .overlay li { margin: 4px 0; }
+    .close {
+      position: absolute;
+      top: 8px;
+      right: 10px;
+      font-size: 18px;
+      cursor: pointer;
+      color: var(--hud);
+    }
+  </style>
+</head>
+<body>
+  <canvas id="game" width="500" height="1000" aria-label="Sticktris board" tabindex="0"></canvas>
+
+  <div class="hud" id="hud">
+    <span class="labels">Score:</span> <span id="score">0</span>
+    <br><span class="labels">Level:</span> <span id="level">1</span>
+    <br><span class="labels">Squares</span>
+    <br> 1x1: <span id="c1">0</span>
+    <br> 2x2: <span id="c2">0</span>
+    <br> 3x3: <span id="c3">0</span>
+    <br> 4x4: <span id="c4">0</span>
+    <br> 5x5: <span id="c5">0</span>
+    <br> 6x6: <span id="c6">0</span>
+  </div>
+
+  <button class="info-btn" id="infoBtn" title="Info (I)">i</button>
+
+  <div class="overlay" id="overlay" aria-hidden="true">
+    <div class="panel">
+      <div class="close" id="closeOverlay" title="Close">✕</div>
+      <h2>Sticktris</h2>
+      <p>Build closed squares of any size. Larger ones score more. Clearing removes the square’s perimeter; contents inside fall down to fill the gap.</p>
+      <ul>
+        <li>Square sizes 1×1..6×6 are scored separately.</li>
+        <li>Level increases every 10 total squares cleared (faster gravity).</li>
+        <li>Controls: ← → move, ↑ rotate, ↓ soft drop, Space hard drop, R restart, I toggle this menu.</li>
+      </ul>
+      <p>Scoring: 1×1=10, 2×2=20, 3×3=35, 4×4=50, 5×5=100, 6×6=150</p>
+    </div>
+  </div>
+
+  <script>
+    (() => {
+      const BOARD_W = 8;
+      const BOARD_H = 16;
+
+      // Dynamic canvas sizing preserving 1:2 board ratio
+      const canvas = document.getElementById("game");
+      const ctx = canvas.getContext("2d", { alpha: false });
+
+      function resizeCanvas() {
+        const w = window.innerWidth;
+        const h = window.innerHeight;
+        // Board aspect ratio 1:2 (width:height)
+        let targetH = h;
+        let targetW = targetH / 2;
+        if (targetW > w) {
+          targetW = w;
+          targetH = targetW * 2;
+        }
+        canvas.style.width = targetW + "px";
+        canvas.style.height = targetH + "px";
+
+        const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+        canvas.width = Math.floor(targetW * dpr);
+        canvas.height = Math.floor(targetH * dpr);
+        canvas._dpr = dpr;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        // Recompute grid region (80% inset)
+        gridLayout.width = targetW * 0.8;
+        gridLayout.height = targetH * 0.8;
+        gridLayout.x = (targetW - gridLayout.width) / 2;
+        gridLayout.y = (targetH - gridLayout.height) / 2;
+      }
+
+      const gridLayout = { x: 50, y: 100, width: 400, height: 800 };
+
+      window.addEventListener("resize", resizeCanvas);
+      resizeCanvas();
+
+      // Stick thickness in CSS pixels; segments are rendered as rectangles to avoid joint artifacts.
+      const SEG_THICKNESS = 4;
+
+      // Stick colors (no blue)
+      const STICK_COLORS = [
+        "#ff4d4d", "#4dff4d", "#ffd24d", "#ff66ff", "#ff9f4d",
+        "#c2ff4d", "#ff6f91", "#d084ff", "#ffe066", "#ff7f50"
+      ];
+
+      // Base pieces (cross removed)
+      const basePieces = [
+        [[0, 0, 0, -1], [0, 0, 0, 1]],              // I2
+        [[0, 0, 1, 0], [0, 0, 0, -1]],              // L corner
+        [[0, 0, 0, 1]],                             // single
+        [[0, 0, 1, 0], [0, 0, -1, 0], [0, 0, 0, -1]], // T
+        [[0, -1, 0, 0], [0, 0, 0, 1], [0, 1, 0, 2]], // I3
+        [[0, -2, 0, -1], [0, -1, 0, 0], [0, 0, 0, 1], [0, 1, 0, 2]], // I4
+        [[0, 0, 1, 0], [1, 0, 1, 1], [1, 1, 2, 1]], // S-like
+        [[0, 1, 1, 1], [1, 1, 1, 0], [1, 0, 2, 0]], // Z-like
+        [[0, 0, 1, 0], [1, 0, 1, 1], [1, 1, 1, 2]], // tall L
+        [[0, 0, 1, 0], [1, 0, 2, 0], [2, 0, 2, 1]], // └─ shape
+        [[0, 0, 0, 1], [0, 1, 1, 1], [1, 1, 2, 1]]  // Γ chain
+      ];
+      const pieceCount = basePieces.length;
+
+      function rotateCoord(x, y, x1, y1) {
+        return [y, -x, y1, -x1];
+      }
+
+      const pieces = [];
+      for (const p of basePieces) pieces.push(p.map(seg => seg.slice()));
+      for (let i = 0; i < 3; i++) {
+        const l = basePieces.length;
+        const start = pieces.length - l;
+        for (let j = 0; j < l; j++) {
+          const piece = pieces[start + j];
+          pieces.push(piece.map(seg => rotateCoord(...seg)));
+        }
+      }
+      // Normalize endpoints
+      for (let i = 0; i < pieces.length; i++) {
+        for (let j = 0; j < pieces[i].length; j++) {
+          const k = pieces[i][j];
+          const swap = (k[0] === k[2]) ? (k[1] > k[3]) : (k[0] > k[2]);
+          if (swap) pieces[i][j] = [k[2], k[3], k[0], k[1]];
+        }
+      }
+
+      const SQUARE_SCORE = new Map([
+        [1, 10],[2, 20],[3, 35],[4, 50],[5, 100],[6, 150]
+      ]);
+      const scoreForSize = s => SQUARE_SCORE.get(Math.min(6, s)) || 0;
+
+      class Sticktris {
+        constructor(width, height) {
+          this.width = width;
+          this.height = height;
+          this.grid = [];
+          this.score = 0;
+          this.totalSquares = 0;
+          this.level = 1;
+          this.counts = {1:0,2:0,3:0,4:0,5:0,6:0};
+          this.active = false;
+          this.gameOver = false;
+
+          for (let i = 0; i < height * 2 + 1; i++) {
+            this.grid.push(new Array(width + (i % 2)).fill(0));
+          }
+        }
+
+        linePosition([x0,y0,x1,y1]) {
+          const ychange = y1 - y0;
+          if (ychange === 0) return [y0 * 2, x0];
+          return [y0 * 2 + 1, x0];
+        }
+
+        pieceCoordinates() {
+          const coords = [];
+          const def = pieces[this.pieceType];
+          for (const seg of def) {
+            const cp = [
+              seg[0] + this.piecePos.x, seg[1] + this.piecePos.y,
+              seg[2] + this.piecePos.x, seg[3] + this.piecePos.y
+            ];
+            coords.push(this.linePosition(cp));
+          }
+          return coords;
+        }
+
+        checkValid() {
+          for (const [r,c] of this.pieceCoordinates()) {
+            if (r < 0 || r >= this.grid.length) return false;
+            if (c < 0 || c >= this.grid[r].length) return false;
+            if (this.grid[r][c] !== 0) return false;
+          }
+          return true;
+        }
+
+        setPiece(value = 0) {
+          for (const [r,c] of this.pieceCoordinates()) {
+            if (r >= 0 && c >= 0 && r < this.grid.length && c < this.grid[r].length) {
+              this.grid[r][c] = value;
+            }
+          }
+        }
+
+        rotatePiece() {
+          if (!this.active) return;
+          const original = this.pieceType;
+          this.setPiece(0);
+          this.pieceType = (this.pieceType - pieceCount + pieces.length) % pieces.length;
+          if (!this.checkValid()) this.pieceType = original;
+          this.setPiece(this.pieceType + 1);
+        }
+
+        movePiece(dx=0, dy=0) {
+          if (!this.active) return false;
+          this.setPiece(0);
+          this.piecePos.x += dx;
+          this.piecePos.y += dy;
+          const ok = this.checkValid();
+          if (!ok) {
+            this.piecePos.x -= dx;
+            this.piecePos.y -= dy;
+          }
+          this.setPiece(this.pieceType + 1);
+          if (dx === 0 && !ok) {
+            this.active = false;
+            return true;
+          }
+          return false;
+        }
+
+        addPiece() {
+          this.piecePos = { x: Math.floor(this.width/2), y: 2 };
+          const base = Math.floor(Math.random() * pieceCount);
+          const rot = Math.floor(Math.random() * 4);
+          this.pieceType = base + rot * pieceCount;
+          if (!this.checkValid()) {
+            this.gameOver = true;
+            return;
+          }
+          this.setPiece(this.pieceType + 1);
+          this.active = true;
+        }
+
+        colorForValue(v) {
+          if (v <= 0) return "#888888";
+          const base = (v - 1) % pieceCount;
+          return STICK_COLORS[base % STICK_COLORS.length];
+        }
+
+        hasSquareAt(x,y,s) {
+          if (x + s > this.width || y + s > this.height) return false;
+          // top & bottom horizontals
+          for (let i=0;i<s;i++) {
+            if (this.grid[y*2][x+i] === 0) return false;
+            if (this.grid[(y+s)*2][x+i] === 0) return false;
+          }
+          // left & right verticals
+          for (let j=0;j<s;j++) {
+            if (this.grid[y*2+1 + j*2][x] === 0) return false;
+            if (this.grid[y*2+1 + j*2][x+s] === 0) return false;
+          }
+          return true;
+        }
+
+        // Remove only perimeter lines
+        clearSquarePerimeter(x,y,s) {
+          for (let i=0;i<s;i++) {
+            this.grid[y*2][x+i] = 0;
+            this.grid[(y+s)*2][x+i] = 0;
+          }
+          for (let j=0;j<s;j++) {
+            this.grid[y*2+1 + j*2][x] = 0;
+            this.grid[y*2+1 + j*2][x+s] = 0;
+          }
+        }
+
+        // Gravity inside rectangle: compact columns downward within region (contents fall to fill cleared square).
+        gravityInside(x,y,s) {
+          const topH = y*2;
+          const botH = (y+s)*2;
+
+          // Horizontal rows (even indices)
+          for (let col = x; col < x + s; col++) {
+            const collected = [];
+            for (let r = botH; r >= topH; r -= 2) {
+              const v = this.grid[r][col];
+              if (v !== 0) collected.push(v);
+            }
+            let idx = 0;
+            for (let r = botH; r >= topH; r -= 2) {
+              this.grid[r][col] = (idx < collected.length) ? collected[idx++] : 0;
+            }
+          }
+
+          // Vertical rows (odd indices)
+          for (let col = x; col <= x + s; col++) {
+            const collectedV = [];
+            for (let r = topH+1; r <= botH-1; r += 2) {
+              const v = this.grid[r][col];
+              if (v !== 0) collectedV.push(v);
+            }
+            // Fill from bottom upward
+            let idx = 0;
+            for (let r = botH-1; r >= topH+1; r -= 2) {
+              this.grid[r][col] = (idx < collectedV.length) ? collectedV[idx++] : 0;
+            }
+          }
+        }
+
+        clearSquares() {
+          let changed = false;
+          let guard = 0;
+          while (guard++ < 50) {
+            let passCleared = false;
+            const maxSize = Math.min(6, Math.min(this.width,this.height));
+            for (let s = maxSize; s >= 1; s--) {
+              for (let y = 0; y <= this.height - s; y++) {
+                for (let x = 0; x <= this.width - s; x++) {
+                  if (this.hasSquareAt(x,y,s)) {
+                    this.clearSquarePerimeter(x,y,s);
+                    this.gravityInside(x,y,s);
+                    this.score += scoreForSize(s);
+                    this.counts[Math.min(6,s)]++;
+                    this.totalSquares++;
+                    passCleared = true;
+                  }
+                }
+              }
+            }
+            if (!passCleared) break;
+            changed = true;
+          }
+          if (changed) {
+            this.level = Math.floor(this.totalSquares / 10) + 1;
+          }
+        }
+      }
+
+      function draw(game) {
+        const { x:GX, y:GY, width:GW, height:GH } = gridLayout;
+        const cw = canvas.width / (canvas._dpr || 1);
+        const ch = canvas.height / (canvas._dpr || 1);
+
+        ctx.fillStyle = "#000";
+        ctx.fillRect(0,0,cw,ch);
+
+        // Grid
+        ctx.strokeStyle = "#1a1a1a";
+        ctx.lineWidth = 1;
+        ctx.lineCap = "butt";
+        ctx.lineJoin = "miter";
+        for (let i=0;i<=game.width;i++) {
+          const gx = GX + (i*GW)/game.width;
+          ctx.beginPath();
+          ctx.moveTo(gx,GY);
+          ctx.lineTo(gx,GY+GH);
+          ctx.stroke();
+        }
+        for (let i=0;i<=game.height;i++) {
+          const gy = GY + (i*GH)/game.height;
+          ctx.beginPath();
+          ctx.moveTo(GX,gy);
+          ctx.lineTo(GX+GW,gy);
+          ctx.stroke();
+        }
+
+        // Filled cells heuristic (same logic)
+        for (let y=1;y<=game.height;y++) {
+          for (let x=0;x<game.width;x++) {
+            const bottom = game.grid[y*2][x];
+            const left = game.grid[y*2-1][x];
+            const right = game.grid[y*2-1][x+1];
+            if (bottom*left*right>0) {
+              const rx = GX + (x*GW)/game.width;
+              const ry = GY + ((y-1)*GH)/game.height;
+              const rw = GW/game.width;
+              const rh = GH/game.height;
+              ctx.fillStyle = "#262626";
+              ctx.fillRect(rx,ry,rw,rh);
+            }
+          }
+        }
+
+        // Render sticks as rectangles to eliminate intersection artifacts
+        const t = SEG_THICKNESS;
+        // horizontals
+        for (let y = 0; y <= game.height; y++) {
+          const yPix = GY + (y * GH) / game.height;
+          const top = yPix - t/2;
+          const height = t;
+          for (let x = 0; x < game.width; x++) {
+            const val = game.grid[y*2][x];
+            if (!val) continue;
+            ctx.fillStyle = game.colorForValue(val);
+            const x1 = GX + (x * GW) / game.width;
+            const x2 = GX + ((x + 1) * GW) / game.width;
+            // Overlap by half thickness at both ends to cover joints
+            ctx.fillRect(x1 - t/2, top, (x2 - x1) + t, height);
+          }
+        }
+        // verticals
+        for (let y = 0; y < game.height; y++) {
+          const y1 = GY + (y * GH) / game.height;
+          const y2 = GY + ((y + 1) * GH) / game.height;
+          for (let x = 0; x <= game.width; x++) {
+            const val = game.grid[y*2+1][x];
+            if (!val) continue;
+            ctx.fillStyle = game.colorForValue(val);
+            const xPix = GX + (x * GW) / game.width;
+            const left = xPix - t/2;
+            const width = t;
+            // Overlap by half thickness at both ends to cover joints
+            ctx.fillRect(left, y1 - t/2, width, (y2 - y1) + t);
+          }
+        }
+
+        // HUD
+        document.getElementById("score").textContent = game.score;
+        document.getElementById("level").textContent = game.level;
+        document.getElementById("c1").textContent = game.counts[1];
+        document.getElementById("c2").textContent = game.counts[2];
+        document.getElementById("c3").textContent = game.counts[3];
+        document.getElementById("c4").textContent = game.counts[4];
+        document.getElementById("c5").textContent = game.counts[5];
+        document.getElementById("c6").textContent = game.counts[6];
+
+        if (game.gameOver) {
+          ctx.fillStyle = "rgba(0,0,0,0.65)";
+          ctx.fillRect(GX,GY,GW,GH);
+          ctx.textAlign = "center";
+          ctx.fillStyle = "#fff";
+          ctx.font = "22px ui-monospace, Consolas, monospace";
+          ctx.fillText("Game Over — Press R", GX+GW/2, GY+GH/2);
+        }
+      }
+
+      const game = new Sticktris(BOARD_W, BOARD_H);
+      game.addPiece();
+
+      let last = performance.now();
+      let dropTimer = 0;
+      function dropIntervalForLevel(level) {
+        return Math.max(80, 600 - (level-1)*40);
+      }
+
+      function loop(now) {
+        const dt = now - last;
+        last = now;
+        dropTimer += dt;
+
+        if (!game.gameOver) {
+          const interval = dropIntervalForLevel(game.level);
+          if (dropTimer >= interval) {
+            dropTimer = 0;
+            const locked = game.movePiece(0,1);
+            if (locked) {
+              game.clearSquares();
+              if (!game.gameOver) game.addPiece();
+            }
+          }
+        }
+
+        draw(game);
+        requestAnimationFrame(loop);
+      }
+      requestAnimationFrame(loop);
+
+      function softDrop() {
+        const locked = game.movePiece(0,1);
+        if (locked) {
+          game.clearSquares();
+          if (!game.gameOver) game.addPiece();
+        }
+        dropTimer = 0;
+      }
+
+      function restart() {
+        const fresh = new Sticktris(BOARD_W, BOARD_H);
+        game.grid = fresh.grid;
+        game.score = 0;
+        game.totalSquares = 0;
+        game.level = 1;
+        game.counts = {1:0,2:0,3:0,4:0,5:0,6:0};
+        game.active = false;
+        game.gameOver = false;
+        game.addPiece();
+        dropTimer = 0;
+      }
+
+      document.addEventListener("keydown", e => {
+        if (e.key === "i" || e.key === "I") {
+          toggleOverlay(true);
+          e.preventDefault();
+          return;
+        }
+        if (game.gameOver) {
+          if (e.key === "r" || e.key === "R") restart();
+          return;
+        }
+        switch (e.key) {
+          case "ArrowLeft":
+            e.preventDefault(); game.movePiece(-1,0); break;
+          case "ArrowRight":
+            e.preventDefault(); game.movePiece(1,0); break;
+          case "ArrowUp":
+            e.preventDefault(); game.rotatePiece(); break;
+          case "ArrowDown":
+            e.preventDefault(); softDrop(); break;
+          case " ":
+            e.preventDefault();
+            if (game.active) {
+              let locked=false;
+              do { locked = game.movePiece(0,1); } while (!locked);
+              game.clearSquares();
+              if (!game.gameOver) game.addPiece();
+              dropTimer = 0;
+            }
+            break;
+          case "r":
+          case "R":
+            e.preventDefault(); restart(); break;
+        }
+      }, { passive: false });
+
+      // Info overlay handlers
+      const infoBtn = document.getElementById("infoBtn");
+      const overlay = document.getElementById("overlay");
+      const closeOverlay = document.getElementById("closeOverlay");
+
+      function toggleOverlay(toggleClick) {
+        const open = toggleClick ? !overlay.classList.contains("open") : false;
+        if (open) {
+          overlay.classList.add("open");
+          overlay.setAttribute("aria-hidden","false");
+        } else {
+          overlay.classList.remove("open");
+          overlay.setAttribute("aria-hidden","true");
+        }
+      }
+
+      infoBtn.addEventListener("click", () => toggleOverlay(true));
+      closeOverlay.addEventListener("click", () => toggleOverlay(false));
+      overlay.addEventListener("click", e => { if (e.target === overlay) toggleOverlay(false); });
+
+      window.addEventListener("load", () => {
+        canvas.focus();
+        resizeCanvas();
+      });
+    })();
+  </script>
+</body>
+</html>
